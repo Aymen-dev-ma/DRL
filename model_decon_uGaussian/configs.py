@@ -14,13 +14,10 @@ model_config = OrderedDict()
 
 model_config['work_dir'] = './training_results'
 model_config['data_dir'] = './dataset'
-model_config['training_data'] = './dataset/training_data.npz'
-model_config['validation_data'] = './dataset/validation_data.npz'
-model_config['testing_data'] = './dataset/testing_data.npz'
 
 ########################################################################################################################
 
-model_config['dataset'] = 'dataset_name'
+model_config['dataset'] = 'gym'
 model_config['seed'] = 123
 model_config['lr'] = 0.0001
 
@@ -39,7 +36,7 @@ model_config['filter_size'] = 5
 model_config['a_range'] = 2
 
 model_config['z_dim'] = 50
-model_config['x_dim'] = 784  # 28 x 28
+model_config['x_dim'] = 4  # CartPole observation space dimension
 model_config['a_dim'] = 1
 model_config['u_dim'] = 2
 model_config['a_latent_dim'] = 100
@@ -63,7 +60,7 @@ model_config['recons_cost'] = 'l2sq'
 model_config['anneal'] = 1
 
 model_config['work_dir'] = './training_results'
-model_config['data_dir'] = '/scratch/cl641/CausalRL/bcdr_beta/data_prep'
+model_config['data_dir'] = './dataset'
 
 model_config['pxgz_net_layers'] = [100, 100]
 model_config['pxgz_net_outlayers'] = []
@@ -154,8 +151,6 @@ model_config['qugh_net_layers']  = [100]
 model_config['qugh_net_outlayers']  = [[model_config['u_dim'], None],
                                        [model_config['u_dim'], tf.nn.softplus]]
 
-
-
 model_config['lstm_net_layers'] = []
 model_config['lstm_net_outlayers'] = [[model_config['lstm_dim'], None]]
 
@@ -185,4 +180,3 @@ model_config['qrgxa_net_outlayers'] = [[model_config['r_dim'], tf.nn.sigmoid],
 
 
 model_config['model_bn_is_training'] = True
-

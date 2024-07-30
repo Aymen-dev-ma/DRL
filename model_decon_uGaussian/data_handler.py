@@ -1,59 +1,66 @@
-#########################
-## Author: Chaochao Lu ##
-#########################
 import numpy as np
-import logging
+import gym
 
-class DataHandler(object):
+class DataHandler:
     def __init__(self, opts):
-        self.train_num = None
-        self.validation_num = None
-        self.test_num = None
-        self.x_train = None
-        self.a_train = None
-        self.r_train = None
-        self.mask_train = None
-        self.x_validation = None
-        self.a_validation = None
-        self.r_validation = None
-        self.mask_validation = None
-        self.x_test = None
-        self.a_test = None
-        self.r_test = None
-        self.mask_test = None
-        self.train_r_max = None
-        self.train_r_min = None
         self.load_data(opts)
 
     def load_data(self, opts):
-        if opts['dataset'] == 'dataset_name':
-            self.load_dataset(opts)
+        if opts['dataset'] == 'gym':
+            self.load_gym_data(opts)
         else:
-            logging.error(opts['dataset'] + ' cannot be found.')
+            raise ValueError('Dataset not supported!')
 
+    def load_gym_data(self, opts):
+        env = gym.make('CartPole-v1')
+        num_episodes = 100
+        max_steps = 200
 
-    def load_dataset(self, opts):
-        mnist_train = np.load(opts['training_data'])
-        self.x_train = mnist_train['x_train']
-        self.a_train = mnist_train['a_train']
-        self.r_train = mnist_train['r_train']
-        self.mask_train = mnist_train['mask_train']
+        states = []
+        actions = []
+        rewards = []
+        next_states = []
+        dones = []
 
-        mnist_validation = np.load(opts['validation_data'])
-        self.x_validation = mnist_validation['x_validation']
-        self.a_validation = mnist_validation['a_validation']
-        self.r_validation = mnist_validation['r_validation']
-        self.mask_validation = mnist_validation['mask_validation']
+        for episode_index in range(num_episodes):
+            state = env.reset()
+            episode_states = []
+            episode_actions = []
+            episode_rewards = []
+            episode_next_states = []
+            episode_dones = []
 
-        mnist_test = np.load(opts['testing_data'])
-        self.x_test = mnist_test['x_test']
-        self.a_test = mnist_test['a_test']
-        self.r_test = mnist_test['r_test']
-        self.mask_test = mnist_test['mask_test']
+            for step_index in range(max_steps):
+                action = env.action_space.sample()
+                next_state, reward, done, truncated, info = env.step(action)
+                episode_states.append(state)
+                episode_actions.append(action)
+                episode_rewards.append(reward)
+                episode_next_states.append(next_state)
+                episode_dones.append(done)
+                state = next_state
+                if done or truncated:
+                    break
 
-        self.train_num = self.x_train.shape[0]
-        self.validation_num = self.x_validation.shape[0]
-        self.test_num = self.x_test.shape[0]
+            # Padding for uniform length
+            while len(episode_states) < max_steps:
+                episode_states.append(np.zeros_like(state))
+                episode_actions.append(0)
+                episode_rewards.append(0.0)
+                episode_next_states.append(np.zeros_like(state))
+                episode_dones.append(True)
 
-        self.train_r_max = np.amax(self.r_train)
-        self.train_r_min = np.amin(self.r_train)
+            states.append(episode_states)
+            actions.append(episode_actions)
+            rewards.append(episode_rewards)
+            next_states.append(episode_next_states)
+            dones.append(episode_dones)
+
+        self.states = np.array(states, dtype=np.float32)
+        self.actions = np.array(actions, dtype=np.int32)
+        self.rewards = np.array(rewards, dtype=np.float32)
+        self.next_states = np.array(next_states, dtype=np.float32)
+        self.dones = np.array(dones, dtype=bool)
+
+        self.train_r_max = np.max(self.rewards)
+        self.train_r_min = np.min(self.rewards)

@@ -31,25 +31,31 @@ class DataHandler(object):
         else:
             logging.error(opts['dataset'] + ' cannot be found.')
 
-
     def load_dataset(self, opts):
-        mnist_train = np.load(opts['training_data'])
-        self.x_train = mnist_train['x_train']
-        self.a_train = mnist_train['a_train']
-        self.r_train = mnist_train['r_train']
-        self.mask_train = mnist_train['mask_train']
+        # Load the dataset from the npz file
+        data = np.load('gym_data.npz')
+        self.x_train = data['observations']
+        self.a_train = data['actions']
+        self.r_train = data['rewards']
+        self.mask_train = data['dones']
 
-        mnist_validation = np.load(opts['validation_data'])
-        self.x_validation = mnist_validation['x_validation']
-        self.a_validation = mnist_validation['a_validation']
-        self.r_validation = mnist_validation['r_validation']
-        self.mask_validation = mnist_validation['mask_validation']
+        # Split data into training, validation, and test sets
+        split_1 = int(0.8 * len(self.x_train))
+        split_2 = int(0.9 * len(self.x_train))
+        self.x_validation = self.x_train[split_1:split_2]
+        self.a_validation = self.a_train[split_1:split_2]
+        self.r_validation = self.r_train[split_1:split_2]
+        self.mask_validation = self.mask_train[split_1:split_2]
 
-        mnist_test = np.load(opts['testing_data'])
-        self.x_test = mnist_test['x_test']
-        self.a_test = mnist_test['a_test']
-        self.r_test = mnist_test['r_test']
-        self.mask_test = mnist_test['mask_test']
+        self.x_test = self.x_train[split_2:]
+        self.a_test = self.a_train[split_2:]
+        self.r_test = self.r_train[split_2:]
+        self.mask_test = self.mask_train[split_2:]
+
+        self.x_train = self.x_train[:split_1]
+        self.a_train = self.a_train[:split_1]
+        self.r_train = self.r_train[:split_1]
+        self.mask_train = self.mask_train[:split_1]
 
         self.train_num = self.x_train.shape[0]
         self.validation_num = self.x_validation.shape[0]
