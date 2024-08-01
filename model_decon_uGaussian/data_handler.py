@@ -1,66 +1,48 @@
-import numpy as np
 import gym
+import torch
+import numpy as np
 
-class DataHandler:
-    def __init__(self, opts):
-        self.load_data(opts)
+class GymDataHandler:
+    def __init__(self, env_name):
+        self.env = gym.make(env_name)
+        self.state = self.env.reset()
 
-    def load_data(self, opts):
-        if opts['dataset'] == 'gym':
-            self.load_gym_data(opts)
-        else:
-            raise ValueError('Dataset not supported!')
+    def get_initial_state(self):
+        return torch.tensor(self.state, dtype=torch.float32).flatten()
 
-    def load_gym_data(self, opts):
-        env = gym.make('CartPole-v1')
-        num_episodes = 100
-        max_steps = 200
+    def step(self, action):
+        state, reward, terminated, truncated, info = self.env.step(action)
+        done = terminated or truncated
+        if done:
+            state = self.env.reset()
+        return state.flatten(), reward, done, info
 
-        states = []
-        actions = []
-        rewards = []
-        next_states = []
-        dones = []
+    def sample_action(self):
+        return self.env.action_space.sample()
 
-        for episode_index in range(num_episodes):
-            state = env.reset()
-            episode_states = []
-            episode_actions = []
-            episode_rewards = []
-            episode_next_states = []
-            episode_dones = []
-
-            for step_index in range(max_steps):
-                action = env.action_space.sample()
-                next_state, reward, done, truncated, info = env.step(action)
-                episode_states.append(state)
-                episode_actions.append(action)
-                episode_rewards.append(reward)
-                episode_next_states.append(next_state)
-                episode_dones.append(done)
-                state = next_state
-                if done or truncated:
-                    break
-
-            # Padding for uniform length
-            while len(episode_states) < max_steps:
-                episode_states.append(np.zeros_like(state))
-                episode_actions.append(0)
-                episode_rewards.append(0.0)
-                episode_next_states.append(np.zeros_like(state))
-                episode_dones.append(True)
-
-            states.append(episode_states)
-            actions.append(episode_actions)
-            rewards.append(episode_rewards)
-            next_states.append(episode_next_states)
-            dones.append(episode_dones)
-
-        self.states = np.array(states, dtype=np.float32)
-        self.actions = np.array(actions, dtype=np.int32)
-        self.rewards = np.array(rewards, dtype=np.float32)
-        self.next_states = np.array(next_states, dtype=np.float32)
-        self.dones = np.array(dones, dtype=bool)
-
-        self.train_r_max = np.max(self.rewards)
-        self.train_r_min = np.min(self.rewards)
+    def generate_batch(self, batch_size):
+        states, actions, rewards, next_states, dones = [], [], [], [], []
+        for _ in range(batch_size):
+            action = self.sample_action()
+            next_state, reward, done, _ = self.step(action)
+            states.append(self.state)
+            actions.append(action)
+            rewards.append(reward)
+            next_states.append(next_state)
+            dones.append(done)
+            self.state = next_state
+        try:
+            states = torch.tensor(np.array(states), dtype=torch.float32)
+            actions = torch.tensor(np.array(actions), dtype=torch.float32).unsqueeze(1)
+            rewards = torch.tensor(np.array(rewards), dtype=torch.float32).unsqueeze(1)
+            next_states = torch.tensor(np.array(next_states), dtype=torch.float32)
+            dones = torch.tensor(np.array(dones), dtype=torch.float32).unsqueeze(1)
+        except Exception as e:
+            print(f"Error in generate_batch: {e}")
+            print(f"states: {states}")
+            print(f"actions: {actions}")
+            print(f"rewards: {rewards}")
+            print(f"next_states: {next_states}")
+            print(f"dones: {dones}")
+            raise e
+        return states, actions, rewards, next_states, dones

@@ -1,333 +1,71 @@
-import tensorflow as tf
-import os
-import numpy as np
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-tf.compat.v1.disable_eager_execution()  # Disable eager execution to use TensorFlow 1.x functionalities
+class FullyConnectedLayer(nn.Module):
+    def __init__(self, in_dim, out_dim, init_bias=0.0):
+        super(FullyConnectedLayer, self).__init__()
+        self.fc = nn.Linear(in_dim, out_dim)
+        nn.init.xavier_uniform_(self.fc.weight)
+        nn.init.constant_(self.fc.bias, init_bias)
 
-########################################################################################################################
-########################################## basic NN components #########################################################
-########################################################################################################################
+    def forward(self, x):
+        return self.fc(x)
 
-def fully_connected_layer(opts, inp, out_dim, scope, reuse=tf.compat.v1.AUTO_REUSE):
-    bias = opts['init_bias']
-    shape = inp.get_shape().as_list()
-    in_shape = shape[-1]
+class Conv2dLayer(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, init_bias=0.0):
+        super(Conv2dLayer, self).__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
+        nn.init.xavier_uniform_(self.conv.weight)
+        nn.init.constant_(self.conv.bias, init_bias)
 
-    if len(shape) == 3 or len(shape) == 5:
-        inp = tf.reshape(inp, [shape[0], shape[1], -1])
-        inp = tf.reshape(inp, [-1, tf.shape(inp)[2]])
-        in_shape = np.prod(shape[2:])
-    elif len(shape) == 4:
-        inp = tf.reshape(inp, [shape[0], -1])
-        in_shape = np.prod(shape[1:])
+    def forward(self, x):
+        return self.conv(x)
 
-    with tf.compat.v1.variable_scope(scope, reuse=reuse):
-        W = tf.compat.v1.get_variable('W', [in_shape, out_dim], tf.float32, initializer=tf.compat.v1.keras.initializers.VarianceScaling())
-        b = tf.compat.v1.get_variable('b', [out_dim], initializer=tf.constant_initializer(bias))
+class Deconv2dLayer(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, init_bias=0.0):
+        super(Deconv2dLayer, self).__init__()
+        self.deconv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding)
+        nn.init.xavier_uniform_(self.deconv.weight)
+        nn.init.constant_(self.deconv.bias, init_bias)
 
-    outp = tf.matmul(inp, W) + b
+    def forward(self, x):
+        return self.deconv(x)
 
-    if len(shape) == 3 or len(shape) == 5:
-        outp = tf.reshape(outp, [shape[0], shape[1], out_dim])
+class FCNet(nn.Module):
+    def __init__(self, layers, activations):
+        super(FCNet, self).__init__()
+        self.layers = nn.ModuleList()
+        for i in range(len(layers) - 1):
+            self.layers.append(FullyConnectedLayer(layers[i], layers[i+1]))
+        self.activations = activations
 
-    return outp
+    def forward(self, x):
+        for i, layer in enumerate(self.layers):
+            x = layer(x)
+            if self.activations[i] is not None:
+                x = self.activations[i](x)
+        return x
 
-def ac_fully_connected_layer(opts, inp, out_dim, scope, reuse=tf.compat.v1.AUTO_REUSE, trainable=True):
-    bias = opts['init_bias']
-    shape = inp.get_shape().as_list()
-    in_shape = shape[-1]
+def gaussian_kl(mu_p, cov_p, mu_q, cov_q):
+    kl = torch.log(cov_q / cov_p) + (cov_p + (mu_p - mu_q).pow(2)) / cov_q - 1
+    return 0.5 * kl.sum(dim=-1).mean()
 
-    if len(shape) == 3 or len(shape) == 5:
-        inp = tf.reshape(inp, [shape[0], shape[1], -1])
-        inp = tf.reshape(inp, [-1, tf.shape(inp)[2]])
-        in_shape = np.prod(shape[2:])
-    elif len(shape) == 4:
-        inp = tf.reshape(inp, [shape[0], -1])
-        in_shape = np.prod(shape[1:])
+def bernoulli_kl(u_p, u_q):
+    kl = u_p * (torch.log(u_p + 1e-10) - torch.log(u_q + 1e-10)) + (1 - u_p) * (torch.log(1 - u_p + 1e-10) - torch.log(1 - u_q + 1e-10))
+    return kl.mean()
 
-    with tf.compat.v1.variable_scope(scope, reuse=reuse):
-        W = tf.compat.v1.get_variable('W', [in_shape, out_dim], tf.float32, initializer=tf.compat.v1.keras.initializers.VarianceScaling(), trainable=trainable)
-        b = tf.compat.v1.get_variable('b', [out_dim], initializer=tf.constant_initializer(bias), trainable=trainable)
-
-    outp = tf.matmul(inp, W) + b
-
-    if len(shape) == 3 or len(shape) == 5:
-        outp = tf.reshape(outp, [shape[0], shape[1], out_dim])
-
-    return outp
-
-def conv2d_layer(opts, inp, out_dim, scope, filter_size, d_h=2, d_w=2, padding='SAME', l2_norm=False, reuse=tf.compat.v1.AUTO_REUSE):
-    bias = opts['init_bias']
-    shape = inp.get_shape().as_list()
-    k_h = filter_size
-    k_w = filter_size
-
-    with tf.compat.v1.variable_scope(scope, reuse=reuse):
-        W = tf.compat.v1.get_variable('W', [k_h, k_w, shape[-1], out_dim], initializer=tf.compat.v1.keras.initializers.VarianceScaling())
-        if l2_norm:
-            W = tf.nn.l2_normalize(W, 2)
-        b = tf.compat.v1.get_variable('b', [out_dim], initializer=tf.constant_initializer(bias))
-
-    inp = tf.reshape(inp, [-1, shape[-3], shape[-2], shape[-1]])
-    conv = tf.nn.conv2d(inp, W, strides=[1, d_h, d_w, 1], padding=padding)
-    outp = tf.nn.bias_add(conv, b)
-    conv_shape = outp.get_shape().as_list()
-    if len(shape) > 4:
-        outp = tf.reshape(outp, [shape[0], shape[1], conv_shape[1], conv_shape[2], conv_shape[3]])
-
-    return outp
-
-def deconv2d_layer(opts, inp, out_shape, scope, filter_size, d_h=2, d_w=2, padding='SAME', reuse=tf.compat.v1.AUTO_REUSE):
-    shape = inp.get_shape().as_list()
-    k_h = filter_size
-    k_w = filter_size
-    out_shape = inp.get_shape().as_list()[:-3] + out_shape
-
-    with tf.compat.v1.variable_scope(scope, reuse=reuse):
-        W = tf.compat.v1.get_variable('W', [k_h, k_w, out_shape[-1], shape[-1]], initializer=tf.compat.v1.keras.initializers.VarianceScaling())
-        b = tf.compat.v1.get_variable('b', [out_shape[-1]], initializer=tf.constant_initializer(0.0))
-
-    inp = tf.reshape(inp, [-1, shape[-3], shape[-2], shape[-1]])
-    deconv = tf.nn.conv2d_transpose(inp, W, output_shape=[tf.shape(inp)[0]] + out_shape[-3:], strides=[1, d_h, d_w, 1], padding=padding)
-    deconv = tf.nn.bias_add(deconv, b)
-    outp = tf.reshape(deconv, out_shape)
-
-    return outp
-
-########################################################################################################################
-########################################## basic NN models #############################################################
-########################################################################################################################
-
-def fc_net(opts, inp, in_layers, out_layers, scope, in_activation=tf.nn.softplus, reuse=tf.compat.v1.AUTO_REUSE):
-    h = inp
-    if in_layers:
-        for i, out_dim in enumerate(in_layers):
-            h = fully_connected_layer(opts, h, out_dim, scope+'_fc_layer_{:d}'.format(i), reuse=reuse)
-            h = in_activation(h)
-            h = tf.compat.v1.layers.batch_normalization(h, training=opts['model_bn_is_training'], reuse=reuse, name=scope + '_fc_bn_{:d}'.format(i))
-
-        if not out_layers:
-            return h
-
-    outputs = []
-    for i, (out_dim, out_activation) in enumerate(out_layers):
-        outp = fully_connected_layer(opts, h, out_dim, scope+'_fc_outlayer_{:d}'.format(i), reuse=reuse)
-        if out_activation is not None:
-            outp = out_activation(outp)
-        outputs.append(outp)
-
-    return outputs if len(outputs) > 1 else outputs[0]
-
-def ac_fc_net(opts, inp, in_layers, out_layers, scope, is_training=True, in_activation=tf.nn.relu, reuse=tf.compat.v1.AUTO_REUSE, trainable=True):
-    h = inp
-    if in_layers:
-        for i, out_dim in enumerate(in_layers):
-            h = ac_fully_connected_layer(opts, h, out_dim, scope+'_fc_layer_{:d}'.format(i), reuse=reuse, trainable=trainable)
-            h = in_activation(h)
-            h = tf.compat.v1.layers.dropout(h, rate=opts['dropout_rate'], training=trainable & is_training)
-
-        if not out_layers:
-            return h
-
-    outputs = []
-    for i, (out_dim, out_activation) in enumerate(out_layers):
-        outp = fully_connected_layer(opts, h, out_dim, scope+'_fc_outlayer_{:d}'.format(i), reuse=reuse)
-        if out_activation is not None:
-            outp = out_activation(outp)
-        outputs.append(outp)
-
-    return outputs if len(outputs) > 1 else outputs[0]
-
-def encoder(opts, inp, in_channels, out_channel, scope, in_activation=tf.nn.softplus, out_activation=tf.nn.softplus, reuse=tf.compat.v1.AUTO_REUSE):
-    h = inp
-    filter_size = opts['filter_size']
-
-    for i, out_dim in enumerate(in_channels):
-        h = conv2d_layer(opts, h, out_dim, scope+'_conv2d_layer_{:d}'.format(i), filter_size, reuse=reuse)
-        h = in_activation(h)
-        h = tf.compat.v1.layers.batch_normalization(h, training=opts['model_bn_is_training'], reuse=reuse, name=scope+'_encoder_bn_{:d}'.format(i))
-
-    for i, out_dim in enumerate(out_channel):
-        h = conv2d_layer(opts, h, out_dim, scope+'_conv2d_outlayer_{:d}'.format(i), filter_size, reuse=reuse)
-        if out_activation is not None:
-            h = out_activation(h)
-
-    return h
-
-def decoder(opts, inp, in_shape, out_shape, scope, in_activation=tf.nn.softplus, reuse=tf.compat.v1.AUTO_REUSE):
-    h = inp
-    filter_size = opts['filter_size']
-
-    for i, o_shape in enumerate(in_shape):
-        h = deconv2d_layer(opts, h, o_shape, scope+'_deconv2d_layer_{:d}'.format(i), filter_size, reuse=reuse)
-        h = in_activation(h)
-        h = tf.compat.v1.layers.batch_normalization(h, training=opts['model_bn_is_training'], reuse=reuse, name=scope + '_decoder_bn_{:d}'.format(i))
-
-    if not out_shape:
-        return h
-
-    outputs = []
-    for i, (o_shape, out_activation) in enumerate(out_shape):
-        outp = deconv2d_layer(opts, h, o_shape, scope+'_deconv2d_outlayer_{:d}'.format(i), filter_size, reuse=reuse)
-        outp = out_activation(outp)
-        outputs.append(outp)
-
-    return outputs if len(outputs) > 1 else outputs[0]
-
-########################################################################################################################
-######################################### basic model functions ########################################################
-########################################################################################################################
-
-def lstm_dropout(h, dropout_prob):
-    if dropout_prob > 0:
-        retain_prob = 1 - dropout_prob
-        h = tf.multiply(h, tf.cast(tf.random.uniform(h.shape, dtype=tf.float32) < retain_prob, tf.float32))
-        h = h / retain_prob
-    return h
-
-def gaussianKL(mu_p, cov_p, mu_q, cov_q, mask=None):
-    if len(mu_p.get_shape().as_list()) == 2:
-        mu_p = tf.expand_dims(mu_p, 1)
-        cov_p = tf.expand_dims(cov_p, 1)
-        mu_q = tf.expand_dims(mu_q, 1)
-        cov_q = tf.expand_dims(cov_q, 1)
-
-    diff_mu = mu_p - mu_q
-    KL = tf.math.log(1e-10+cov_p) - tf.math.log(1e-10+cov_q) - 1. + cov_q/(cov_p+1e-10) + diff_mu**2/(cov_p+1e-10)
-    if mask is not None:
-        KL_masked = 0.5 * tf.multiply(KL, tf.tile(mask, [1, 1, KL.get_shape().as_list()[-1]]))
-    else:
-        KL_masked = 0.5 * KL
-    return tf.reduce_mean(tf.reduce_sum(KL_masked, axis=2))
-
-def bernoulliKL(u_p, u_q):
-    KL = u_p * (tf.math.log(u_p+1e-10) - tf.math.log(u_q+1e-10)) + (1-u_p) * (tf.math.log(1-u_p+1e-10) - tf.math.log(1-u_q+1e-10))
-    return tf.reduce_mean(KL)
-
-def gaussianNLL(data, mu, cov, mask=None):
-    nll = 0.5 * (tf.math.log(2*np.pi) + tf.math.log(1e-10+cov) + ((data-mu)**2/(cov+1e-10)))
-    if mask is not None:
-        nll = tf.multiply(nll, tf.tile(mask, [1, 1, nll.get_shape().as_list()[-1]]))
-
-    if len(data.get_shape().as_list()) == 3:
-        return tf.reduce_mean(tf.reduce_sum(nll, axis=2))
-    else:
-        return tf.reduce_mean(tf.reduce_sum(nll, axis=1))
-
-def gaussianNE(mu, cov):
-    ne = -0.5 * tf.math.log(2. * np.pi * cov + 1e-10) - 0.5
-    if len(mu.get_shape().as_list()) == 3:
-        return tf.reduce_mean(tf.reduce_sum(ne, axis=2))
-    else:
-        return tf.reduce_mean(tf.reduce_sum(ne, axis=1))
+def gaussian_nll(data, mu, cov):
+    nll = 0.5 * (torch.log(2 * torch.pi) + torch.log(cov) + (data - mu).pow(2) / cov)
+    return nll.sum(dim=-1).mean()
 
 def recons_loss(cost, real, recons):
-    loss = 0
     if cost == 'l2':
-        loss = tf.reduce_sum(tf.square(real - recons), axis=[2])
-        loss = 0.2 * tf.reduce_mean(tf.sqrt(1e-10 + loss))
+        loss = torch.sqrt(1e-10 + (real - recons).pow(2).sum(dim=-1))
     elif cost == 'l2sq':
-        loss = tf.reduce_sum(tf.square(real - recons), axis=[2])
-        loss = 0.05 * tf.reduce_mean(loss)
+        loss = (real - recons).pow(2).sum(dim=-1)
     elif cost == 'l1':
-        loss = tf.reduce_sum(tf.abs(real - recons), axis=[2])
-        loss = 0.02 * tf.reduce_mean(loss)
+        loss = (real - recons).abs().sum(dim=-1)
     elif cost == 'cross_entropy':
-        loss = -tf.reduce_sum(real * tf.math.log(1e-10 + recons) + (1 - real) * tf.math.log(1e-10 + 1 - recons), axis=[2])
-        loss = tf.reduce_mean(loss)
-    return loss
-
-def save_mnist_plots(opts, x_gt_tr, x_gt_te, x_recons_tr, x_recons_te, train_nll, train_kl, validation_nll, validation_kl, train_x_loss, validation_x_loss, train_a_loss, validation_a_loss, train_r_loss, validation_r_loss, x_seq_sample, filename):
-    sample_gt_tr = []
-    sample_rc_tr = []
-    sample_gt_te = []
-    sample_rc_te = []
-    sample_gen = []
-
-    x_gt_tr = np.reshape(x_gt_tr, [opts['batch_size'], opts['nsteps'], opts['mnist_dim'], opts['mnist_dim']])
-    x_recons_tr = np.reshape(x_recons_tr, [opts['batch_size'], opts['nsteps'], opts['mnist_dim'], opts['mnist_dim']])
-    x_gt_te = np.reshape(x_gt_te, [opts['batch_size'], opts['nsteps'], opts['mnist_dim'], opts['mnist_dim']])
-    x_recons_te = np.reshape(x_recons_te, [opts['batch_size'], opts['nsteps'], opts['mnist_dim'], opts['mnist_dim']])
-    x_seq_sample = np.reshape(x_seq_sample, [opts['batch_size'], opts['nsteps'], opts['mnist_dim'], opts['mnist_dim']])
-
-    for i in range(opts['sample_num']):
-        for j in range(opts['nsteps']):
-            sample_gt_tr.append(x_gt_tr[i][j])
-            sample_rc_tr.append(x_recons_tr[i][j])
-            sample_gt_te.append(x_gt_te[i][j])
-            sample_rc_te.append(x_recons_te[i][j])
-            sample_gen.append(x_seq_sample[i][j])
-
-    img6 = np.concatenate(sample_gt_tr, axis=1)
-    img6 = np.concatenate(np.split(img6, opts['sample_num'], 1), axis=0)
-    img7 = np.concatenate(sample_rc_tr, axis=1)
-    img7 = np.concatenate(np.split(img7, opts['sample_num'], 1), axis=0)
-    img8 = np.concatenate(sample_gt_te, axis=1)
-    img8 = np.concatenate(np.split(img8, opts['sample_num'], 1), axis=0)
-    img9 = np.concatenate(sample_rc_te, axis=1)
-    img9 = np.concatenate(np.split(img9, opts['sample_num'], 1), axis=0)
-    img10 = np.concatenate(sample_gen, axis=1)
-    img10 = np.concatenate(np.split(img10, opts['sample_num'], 1), axis=0)
-
-    dpi = 100
-    height_pic = img6.shape[0]
-    width_pic = img6.shape[1]
-    fig_height = 4 * height_pic / float(dpi)
-    fig_width = 10 * width_pic / float(dpi)
-    fig = plt.figure(figsize=(fig_width, fig_height))
-    gs = matplotlib.gridspec.GridSpec(2, 5)
-
-    total_num = len(train_nll)
-    x = np.arange(1, total_num + 1)
-
-    plt.subplot(gs[0, 0])
-    plt.plot(x, train_nll, linewidth=1, color='blue', label='train_nll')
-    plt.plot(x, validation_nll, linewidth=1, color='green', label='validation_nll')
-    plt.legend(loc='upper right')
-
-    plt.subplot(gs[0, 1])
-    plt.plot(x, train_kl, linewidth=1, color='blue', label='train_kl')
-    plt.plot(x, validation_kl, linewidth=1, color='green', label='validation_kl')
-    plt.legend(loc='upper right')
-
-    plt.subplot(gs[0, 2])
-    plt.plot(x, train_x_loss, linewidth=1, color='blue', label='train_x_loss')
-    plt.plot(x, validation_x_loss, linewidth=1, color='green', label='validation_x_loss')
-    plt.legend(loc='upper right')
-
-    plt.subplot(gs[0, 3])
-    plt.plot(x, train_a_loss, linewidth=1, color='blue', label='train_a_loss')
-    plt.plot(x, validation_a_loss, linewidth=1, color='green', label='validation_a_loss')
-    plt.legend(loc='upper right')
-
-    plt.subplot(gs[0, 4])
-    plt.plot(x, train_r_loss, linewidth=1, color='blue', label='train_r_loss')
-    plt.plot(x, validation_r_loss, linewidth=1, color='green', label='validation_r_loss')
-    plt.legend(loc='upper right')
-
-    ax = plt.subplot(gs[1, 0])
-    plt.imshow(img6, cmap='gray', interpolation=None, vmin=0., vmax=1.)
-    plt.text(0.47, 1., 'train_x_groundtruth', ha="center", va="bottom", size=10, transform=ax.transAxes)
-
-    ax = plt.subplot(gs[1, 1])
-    plt.imshow(img7, cmap='gray', interpolation=None, vmin=0., vmax=1.)
-    plt.text(0.47, 1., 'train_x_reconstruction', ha="center", va="bottom", size=10, transform=ax.transAxes)
-
-    ax = plt.subplot(gs[1, 2])
-    plt.imshow(img8, cmap='gray', interpolation=None, vmin=0., vmax=1.)
-    plt.text(0.47, 1., 'validation_x_groundtruth', ha="center", va="bottom", size=10, transform=ax.transAxes)
-
-    ax = plt.subplot(gs[1, 3])
-    plt.imshow(img9, cmap='gray', interpolation=None, vmin=0., vmax=1.)
-    plt.text(0.47, 1., 'validation_x_reconstruction', ha="center", va="bottom", size=10, transform=ax.transAxes)
-
-    ax = plt.subplot(gs[1, 4])
-    plt.imshow(img10, cmap='gray', interpolation=None, vmin=0., vmax=1.)
-    plt.text(0.47, 1., 'counterfactual_x_generation', ha="center", va="bottom", size=10, transform=ax.transAxes)
-
-    fig.savefig(os.path.join(opts['work_dir'], 'plots', filename), dpi=dpi)
-    plt.close()
-
+        loss = -(real * torch.log(recons + 1e-10) + (1 - real) * torch.log(1 - recons + 1e-10)).sum(dim=-1)
+    return loss.mean()
